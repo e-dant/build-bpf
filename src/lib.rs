@@ -2,7 +2,7 @@ use libbpf_cargo::SkeletonBuilder;
 
 macro_rules! known_env {
     ($name:literal) => {
-        env::var($name).expect(concat!($name, " must be set in build script"))
+        std::env::var($name).expect(concat!($name, " must be set in build script"))
     };
 }
 
@@ -80,7 +80,7 @@ fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
     let tmp = TmpDir::new();
     let tmp = tmp.path.clone();
     let tmp = tmp.to_str().unwrap();
-    if std::fs::metadata(format!("{dst_dir}/include/vmlinux")).is_ok() {
+    if std::fs::metadata(dst_dir).is_ok() {
         return Ok(());
     }
     if !std::fs::metadata("/sys/kernel/btf/vmlinux").is_ok() {
@@ -103,7 +103,7 @@ fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
     let gitcloned = std::process::Command::new("git")
         .arg("clone")
         .arg("https://github.com/libbpf/libbpf-bootstrap")
-        .arg(tmp)
+        .arg(format!("{tmp}/libbpf-bootstrap"))
         .output()?;
     if !gitcloned.status.success() {
         return Err(std::io::Error::new(
@@ -112,6 +112,12 @@ fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
         ));
     }
     let vmlinux_src_dir = format!("{tmp}/libbpf-bootstrap/vmlinux");
+    if !std::fs::metadata(&vmlinux_src_dir).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Error (vmlinux source not found)",
+        ));
+    }
     let vmlinux_src_arch_dirs = std::process::Command::new("find")
         .arg(".")
         .arg("-mindepth")
@@ -127,14 +133,15 @@ fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
         .lines()
         .filter(|line| !line.is_empty());
     for arch in vmlinux_src_arch_dirs {
-        let src = std::path::Path::new(&format!("{vmlinux_src_dir}/{arch}/vmlinux.h")).canonicalize().unwrap();
-        let dst = std::path::Path::new(&format!("{dst_dir}/include/vmlinux/{arch}/vmlinux.h")).canonicalize().unwrap();
-        if !dst.parent().unwrap().exists() {
-            std::fs::create_dir_all(dst.parent().unwrap())?;
+        let src = format!("{vmlinux_src_dir}/{arch}/vmlinux.h");
+        let dst_dir = format!("{dst_dir}/{arch}");
+        let src = std::path::Path::new(&src).canonicalize().unwrap();
+        if std::fs::metadata(&dst_dir).is_err() {
+            std::fs::create_dir_all(&dst_dir)?;
         }
-        std::fs::rename(src, dst)?;
+        std::fs::rename(src, &format!("{dst_dir}/vmlinux.h"))?;
     }
-    let vmlinux_host_dst_dir = format!("{dst_dir}/include/vmlinux/host");
+    let vmlinux_host_dst_dir = format!("{dst_dir}/host");
     std::fs::create_dir_all(std::path::Path::new(&vmlinux_host_dst_dir))?;
     let vmlinux_h = format!("{vmlinux_host_dst_dir}/vmlinux.h");
     let bpftool = std::process::Command::new("bpftool")
@@ -163,10 +170,12 @@ fn gen_skel(
     vmlinux_hdr_dir: &str,
     skel_out_file: &str,
 ) -> Result<(), std::io::Error> {
+    let cargo_arch = known_env!("CARGO_CFG_TARGET_ARCH");
+    let kernel_arch = cargo_arch_to_kernel_arch(&cargo_arch);
     SkeletonBuilder::new()
         .source(prog_src_file)
         .debug(true)
-        .clang_args(["-I", &vmlinux_hdr_dir])
+        .clang_args(["-I", &format!("{vmlinux_hdr_dir}/{kernel_arch}")])
         .build_and_generate(std::path::Path::new(&skel_out_file))
         .map_err(|e| {
             println!("Failed to build BPF program: {e}");
@@ -183,6 +192,23 @@ pub fn guess_bpf_prog_names(crate_manifest_dir: &str) -> impl std::iter::Iterato
     .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_string())
     .filter(|entry| entry.ends_with(".bpf.c"))
     .map(|entry| entry.split('.').next().unwrap().to_string())
+}
+
+pub fn guess_targets<'a>() -> impl std::iter::Iterator<Item = BuildBpf> + 'a {
+    let crate_manifest_dir = known_env!("CARGO_MANIFEST_DIR");
+    let cargo_out_dir = known_env!("OUT_DIR");
+    guess_bpf_prog_names(&crate_manifest_dir).map(move |prog| {
+        let src = format!("{crate_manifest_dir}/src/bpf/{prog}.bpf.c");
+        let vmlinux_hdr_dir = format!("{crate_manifest_dir}/include/vmlinux");
+        let skel_out_file = format!("{cargo_out_dir}/skel_{prog}.rs");
+        let sym_link_skel_to = vec![format!("{crate_manifest_dir}/src/skel_{prog}.rs")];
+        BuildBpf {
+            bpf_prog_src_file: src,
+            vmlinux_hdr_dir,
+            skel_out_file,
+            sym_link_skel_to,
+        }
+    })
 }
 
 pub fn cargo_arch_to_kernel_arch(arch: &str) -> &str {
@@ -214,7 +240,7 @@ impl BuildBpf {
             &self.skel_out_file,
         )?;
         for to in &self.sym_link_skel_to {
-            println!("cargo:rerun-if-changed={}", to);
+            println!("cargo:rerun-if-changed={to}");
             sym_link_when_files_differ(&self.skel_out_file, &to)?;
         }
         Ok(self)
