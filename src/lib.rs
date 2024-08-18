@@ -170,12 +170,11 @@ fn gen_skel(
     vmlinux_hdr_dir: &str,
     skel_out_file: &str,
 ) -> Result<(), std::io::Error> {
-    let cargo_arch = known_env!("CARGO_CFG_TARGET_ARCH");
-    let kernel_arch = cargo_arch_to_kernel_arch(&cargo_arch);
+    let arch = kernel_arch();
     SkeletonBuilder::new()
         .source(prog_src_file)
         .debug(true)
-        .clang_args(["-I", &format!("{vmlinux_hdr_dir}/{kernel_arch}")])
+        .clang_args(["-I", &format!("{vmlinux_hdr_dir}/{arch}")])
         .build_and_generate(std::path::Path::new(&skel_out_file))
         .map_err(|e| {
             println!("Failed to build BPF program: {e}");
@@ -184,29 +183,42 @@ fn gen_skel(
     Ok(())
 }
 
-pub fn guess_bpf_prog_names(crate_manifest_dir: &str) -> impl std::iter::Iterator<Item = String> {
-    std::fs::read_dir(&std::path::Path::new(&format!(
-        "{crate_manifest_dir}/src/bpf"
-    )))
-    .unwrap()
-    .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_string())
-    .filter(|entry| entry.ends_with(".bpf.c"))
-    .map(|entry| entry.split('.').next().unwrap().to_string())
+pub fn cargo_crate_manifest_dir() -> String {
+    known_env!("CARGO_MANIFEST_DIR")
+}
+
+pub fn cargo_out_dir() -> String {
+    known_env!("OUT_DIR")
+}
+
+pub fn cargo_arch() -> String {
+    known_env!("CARGO_CFG_TARGET_ARCH")
+}
+
+pub fn kernel_arch() -> String {
+    cargo_arch_to_kernel_arch(&cargo_arch()).to_string()
+}
+
+pub fn guess_bpf_prog_names() -> impl std::iter::Iterator<Item = String> {
+    let cratedir = cargo_crate_manifest_dir();
+    std::fs::read_dir(&std::path::Path::new(&format!("{cratedir}/src/bpf")))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_string())
+        .filter(|entry| entry.ends_with(".bpf.c"))
+        .map(|entry| entry.split('.').next().unwrap().to_string())
 }
 
 pub fn guess_targets<'a>() -> impl std::iter::Iterator<Item = BuildBpf> + 'a {
-    let crate_manifest_dir = known_env!("CARGO_MANIFEST_DIR");
-    let cargo_out_dir = known_env!("OUT_DIR");
-    guess_bpf_prog_names(&crate_manifest_dir).map(move |prog| {
-        let src = format!("{crate_manifest_dir}/src/bpf/{prog}.bpf.c");
-        let vmlinux_hdr_dir = format!("{crate_manifest_dir}/include/vmlinux");
-        let skel_out_file = format!("{cargo_out_dir}/skel_{prog}.rs");
-        let sym_link_skel_to = vec![format!("{crate_manifest_dir}/src/skel_{prog}.rs")];
+    guess_bpf_prog_names().map(move |prog| {
+        let cratedir = cargo_crate_manifest_dir();
+        let outdir = cargo_out_dir();
+        let src = format!("{cratedir}/src/bpf/{prog}.bpf.c");
+        let vmlinux_hdr_dir = format!("{cratedir}/include/vmlinux");
+        let skel_out_file = format!("{outdir}/skel_{prog}.rs");
         BuildBpf {
             bpf_prog_src_file: src,
             vmlinux_hdr_dir,
-            skel_out_file,
-            sym_link_skel_to,
+            skel_dst_file: skel_out_file,
         }
     })
 }
@@ -223,30 +235,35 @@ pub fn cargo_arch_to_kernel_arch(arch: &str) -> &str {
 }
 
 pub struct BuildBpf {
-    bpf_prog_src_file: String,
-    vmlinux_hdr_dir: String,
-    skel_out_file: String,
-    sym_link_skel_to: Vec<String>,
+    pub bpf_prog_src_file: String,
+    pub vmlinux_hdr_dir: String,
+    pub skel_dst_file: String,
 }
 
 impl BuildBpf {
     pub fn try_build(&self) -> Result<&Self, std::io::Error> {
         println!("cargo:rerun-if-changed={}", self.bpf_prog_src_file);
-        println!("cargo:rerun-if-changed={}", self.skel_out_file);
+        println!("cargo:rerun-if-changed={}", self.skel_dst_file);
         gen_vmlinux(&self.vmlinux_hdr_dir)?;
         gen_skel(
             &self.bpf_prog_src_file,
             &self.vmlinux_hdr_dir,
-            &self.skel_out_file,
+            &self.skel_dst_file,
         )?;
-        for to in &self.sym_link_skel_to {
-            println!("cargo:rerun-if-changed={to}");
-            sym_link_when_files_differ(&self.skel_out_file, &to)?;
-        }
         Ok(self)
     }
 
-    pub fn must_build(&self) {
-        self.try_build().unwrap();
+    pub fn must_build(&self) -> &Self {
+        self.try_build().unwrap()
+    }
+
+    pub fn try_sym_link_skel_to(&self, dst: &str) -> Result<&Self, std::io::Error> {
+        println!("cargo:rerun-if-changed={dst}");
+        sym_link_when_files_differ(&self.skel_dst_file, dst)?;
+        Ok(self)
+    }
+
+    pub fn must_sym_link_skel_to(&self, dst: &str) -> &Self {
+        self.try_sym_link_skel_to(dst).unwrap()
     }
 }
