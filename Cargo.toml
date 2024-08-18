@@ -3,6 +3,7 @@ name = "build-bpf"
 version = "0.1.0"
 edition = "2021"
 authors = ["Will <edant.io@protonmail.com>"]
+description = "Tools for building ELFs and Skeletons for typical (e)BPF programs"
 repository = "https://github.com/e-dant/build-bpf"
 readme = "readme.md"
 homepage = "https://github.com/e-dant/build-bpf"
