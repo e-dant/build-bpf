@@ -183,29 +183,40 @@ fn gen_skel(
     Ok(())
 }
 
-pub fn cargo_crate_manifest_dir() -> String {
+fn cargo_crate_manifest_dir() -> String {
     known_env!("CARGO_MANIFEST_DIR")
 }
 
-pub fn cargo_out_dir() -> String {
+fn cargo_out_dir() -> String {
     known_env!("OUT_DIR")
 }
 
-pub fn cargo_arch() -> String {
+fn cargo_arch() -> String {
     known_env!("CARGO_CFG_TARGET_ARCH")
 }
 
-pub fn kernel_arch() -> String {
+fn kernel_arch() -> String {
     cargo_arch_to_kernel_arch(&cargo_arch()).to_string()
 }
 
-pub fn guess_bpf_prog_names() -> impl std::iter::Iterator<Item = String> {
+fn guess_bpf_prog_names() -> impl std::iter::Iterator<Item = String> {
     let cratedir = cargo_crate_manifest_dir();
     std::fs::read_dir(&std::path::Path::new(&format!("{cratedir}/src/bpf")))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_string())
         .filter(|entry| entry.ends_with(".bpf.c"))
         .map(|entry| entry.split('.').next().unwrap().to_string())
+}
+
+fn cargo_arch_to_kernel_arch(arch: &str) -> &str {
+    match arch {
+        "aarch64" => "arm64",
+        "loongarch64" => "loongarch",
+        "powerpc64" => "powerpc",
+        "riscv64" => "riscv",
+        "x86_64" => "x86",
+        _ => "host",
+    }
 }
 
 pub fn guess_targets<'a>() -> impl std::iter::Iterator<Item = BuildBpf> + 'a {
@@ -223,24 +234,20 @@ pub fn guess_targets<'a>() -> impl std::iter::Iterator<Item = BuildBpf> + 'a {
     })
 }
 
-pub fn cargo_arch_to_kernel_arch(arch: &str) -> &str {
-    match arch {
-        "aarch64" => "arm64",
-        "loongarch64" => "loongarch",
-        "powerpc64" => "powerpc",
-        "riscv64" => "riscv",
-        "x86_64" => "x86",
-        _ => "host",
-    }
-}
-
 pub struct BuildBpf {
-    pub bpf_prog_src_file: String,
-    pub vmlinux_hdr_dir: String,
-    pub skel_dst_file: String,
+    bpf_prog_src_file: String,
+    vmlinux_hdr_dir: String,
+    skel_dst_file: String,
 }
 
 impl BuildBpf {
+    pub fn bpf_prog_name(&self) -> String {
+        match self.bpf_prog_src_file.find('.') {
+            Some(firstdot) => self.bpf_prog_src_file[..firstdot].to_string(),
+            None => self.bpf_prog_src_file.clone(),
+        }
+    }
+
     pub fn try_build(&self) -> Result<&Self, std::io::Error> {
         println!("cargo:rerun-if-changed={}", self.bpf_prog_src_file);
         println!("cargo:rerun-if-changed={}", self.skel_dst_file);
