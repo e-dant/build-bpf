@@ -18,9 +18,9 @@ To symlink the generated (Rust) Skeleton files, you can do something like this:
 fn main() {
     let ln_to = |target: &build_bpf::BuildBpf| {
         format!(
-            "{}/skel_{}.rs",
-            build_bpf::cargo_crate_manifest_dir(),
-            target.bpf_prog_src_file
+            "{}/src/skel_{}.rs",
+            std::env::var("CARGO_MANIFEST_DIR").unwrap(),
+            target.bpf_prog_name()
         )
     };
     build_bpf::guess_targets().for_each(|target| {

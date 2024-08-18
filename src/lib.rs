@@ -242,9 +242,14 @@ pub struct BuildBpf {
 
 impl BuildBpf {
     pub fn bpf_prog_name(&self) -> String {
-        match self.bpf_prog_src_file.find('.') {
-            Some(firstdot) => self.bpf_prog_src_file[..firstdot].to_string(),
-            None => self.bpf_prog_src_file.clone(),
+        let filename = std::path::Path::new(&self.bpf_prog_src_file)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        match filename.find('.') {
+            Some(firstdot) => filename[..firstdot].to_string(),
+            None => filename.to_string(),
         }
     }
 
