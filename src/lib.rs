@@ -224,7 +224,7 @@ pub fn guess_targets<'a>() -> impl std::iter::Iterator<Item = BuildBpf> + 'a {
         let cratedir = cargo_crate_manifest_dir();
         let outdir = cargo_out_dir();
         let src = format!("{cratedir}/src/bpf/{prog}.bpf.c");
-        let vmlinux_hdr_dir = format!("{cratedir}/include/vmlinux");
+        let vmlinux_hdr_dir = format!("{outdir}/include/vmlinux");
         let skel_out_file = format!("{outdir}/skel_{prog}.rs");
         BuildBpf {
             bpf_prog_src_file: src,
