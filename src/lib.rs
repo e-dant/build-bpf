@@ -1,4 +1,6 @@
 use libbpf_cargo::SkeletonBuilder;
+#[cfg(feature = "vmlinux-archs")]
+mod tmp_dir;
 
 macro_rules! known_env {
     ($name:literal) => {
@@ -42,42 +44,9 @@ fn sym_link_when_files_differ(from: &str, to: &str) -> Result<(), std::io::Error
     }
 }
 
-struct TmpDir {
-    path: std::path::PathBuf,
-}
-
-impl Drop for TmpDir {
-    fn drop(&mut self) {
-        if std::fs::metadata(&self.path).is_ok() {
-            std::fs::remove_dir_all(&self.path).expect("Failed to remove temp dir");
-        }
-    }
-}
-
-impl TmpDir {
-    fn new() -> Self {
-        let cmd = std::process::Command::new("mktemp")
-            .arg("-d")
-            .output()
-            .expect("Failed to run mktemp");
-        if !cmd.status.success() {
-            panic!("Failed to run mktemp");
-        }
-        let path = std::str::from_utf8(&cmd.stdout)
-            .expect("Failed to parse mktemp output")
-            .trim()
-            .to_string();
-        let path = std::path::PathBuf::from(path);
-        if !std::fs::metadata(&path).is_ok() {
-            panic!("Failed to create temp dir: {path:?}");
-        }
-        Self { path }
-    }
-}
-
-// If the kernel headers don't exist, make them.
-fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
-    let tmp = TmpDir::new();
+#[cfg(feature = "vmlinux-archs")]
+fn gen_vmlinux_for_archs(dst_dir: &str) -> Result<(), std::io::Error> {
+    let tmp = crate::tmp_dir::TmpDir::new();
     let tmp = tmp.path.clone();
     let tmp = tmp.to_str().unwrap();
     if std::fs::metadata(dst_dir).is_ok() {
@@ -141,6 +110,10 @@ fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
         }
         std::fs::rename(src, &format!("{dst_dir}/vmlinux.h"))?;
     }
+    Ok(())
+}
+
+fn gen_vmlinux_for_host(dst_dir: &str) -> Result<(), std::io::Error> {
     let vmlinux_host_dst_dir = format!("{dst_dir}/host");
     std::fs::create_dir_all(std::path::Path::new(&vmlinux_host_dst_dir))?;
     let vmlinux_h = format!("{vmlinux_host_dst_dir}/vmlinux.h");
@@ -162,22 +135,40 @@ fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-// To build the elf manually:
-// clang -g -target bpf -D__TARGET_ARCH_x86 -c src/bpf/<prog>.bpf.c
-// Which can be nice to actually see the compiler errors.
+fn gen_vmlinux(dst_dir: &str) -> Result<(), std::io::Error> {
+    #[cfg(feature = "vmlinux-archs")]
+    {
+        gen_vmlinux_for_archs(dst_dir)?;
+    }
+    gen_vmlinux_for_host(dst_dir)
+}
+
+
+fn vmlinux_include_dir(vmlinux_hdr_dir: &str, arch: &str) -> String {
+    let archdir = format!("{vmlinux_hdr_dir}/{arch}");
+    if std::fs::metadata(&archdir).is_ok() {
+        archdir
+    } else {
+        format!("{vmlinux_hdr_dir}/host")
+    }
+}
+
 fn gen_skel(
     prog_src_file: &str,
     vmlinux_hdr_dir: &str,
     skel_out_file: &str,
 ) -> Result<(), std::io::Error> {
-    let arch = kernel_arch();
     SkeletonBuilder::new()
         .source(prog_src_file)
         .debug(true)
-        .clang_args(["-I", &format!("{vmlinux_hdr_dir}/{arch}")])
+        .clang_args(["-I", vmlinux_hdr_dir])
         .build_and_generate(std::path::Path::new(&skel_out_file))
         .map_err(|e| {
-            println!("Failed to build BPF program: {e}");
+            println!(r#"
+To build the elf manually:
+$ clang -g -target bpf -D__TARGET_ARCH_x86 -c src/bpf/<prog>.bpf.c
+Which can be nice to actually see the compiler errors.
+Failed to build BPF program: {e}"#);
             std::io::ErrorKind::Other
         })?;
     Ok(())
@@ -223,20 +214,20 @@ pub fn guess_targets<'a>() -> impl std::iter::Iterator<Item = BuildBpf> + 'a {
     guess_bpf_prog_names().map(move |prog| {
         let cratedir = cargo_crate_manifest_dir();
         let outdir = cargo_out_dir();
-        let src = format!("{cratedir}/src/bpf/{prog}.bpf.c");
-        let vmlinux_hdr_dir = format!("{outdir}/include/vmlinux");
-        let skel_out_file = format!("{outdir}/skel_{prog}.rs");
+        let bpf_prog_src_file = format!("{cratedir}/src/bpf/{prog}.bpf.c");
+        let vmlinux_base_dir = format!("{outdir}/include/vmlinux");
+        let skel_dst_file = format!("{outdir}/skel_{prog}.rs");
         BuildBpf {
-            bpf_prog_src_file: src,
-            vmlinux_hdr_dir,
-            skel_dst_file: skel_out_file,
+            bpf_prog_src_file,
+            vmlinux_base_dir,
+            skel_dst_file,
         }
     })
 }
 
 pub struct BuildBpf {
     bpf_prog_src_file: String,
-    vmlinux_hdr_dir: String,
+    vmlinux_base_dir: String,
     skel_dst_file: String,
 }
 
@@ -255,11 +246,10 @@ impl BuildBpf {
 
     pub fn try_build(&self) -> Result<&Self, std::io::Error> {
         println!("cargo:rerun-if-changed={}", self.bpf_prog_src_file);
-        println!("cargo:rerun-if-changed={}", self.skel_dst_file);
-        gen_vmlinux(&self.vmlinux_hdr_dir)?;
+        gen_vmlinux(&self.vmlinux_base_dir)?;
         gen_skel(
             &self.bpf_prog_src_file,
-            &self.vmlinux_hdr_dir,
+            &vmlinux_include_dir(&self.vmlinux_base_dir, &kernel_arch()),
             &self.skel_dst_file,
         )?;
         Ok(self)

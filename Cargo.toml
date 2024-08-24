@@ -1,6 +1,6 @@
 [package]
 name = "build-bpf"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 authors = ["Will <edant.io@protonmail.com>"]
 description = "Tools for building ELFs and Skeletons for typical (e)BPF programs"
@@ -12,3 +12,7 @@ license = "MIT"
 
 [dependencies]
 libbpf-cargo = "0.23"
+
+[features]
+vmlinux-archs = []
+default = []
